@@ -32,12 +32,17 @@ class Segmentator
   private:
     int intensity, multiplier, radius;
     CCFilterType::IndexType CCseed;
+    CCFilterType::Pointer CCfilter;
+
     CTFilterType::IndexType CTseed;
+    CTFilterType::Pointer CTfilter;
     ImageType *inputImage;
 
   public:
     Segmentator(ImageType *inputImage) {
       this->inputImage = inputImage;
+      this->CCfilter = CCFilterType::New();
+      this->CTfilter = CTFilterType::New();
     }
 
     void setSeedPoint(float x, float y, float z) {
@@ -58,30 +63,29 @@ class Segmentator
     }
 
     ImageType * confidenceConnectedSegment() {
-      CCFilterType::Pointer filter = CCFilterType::New();
-      filter->SetReplaceValue(intensity);
-      filter->SetSeed(seed);
-      filter->SetInput(inputImage);
+      CCfilter->SetReplaceValue(intensity);
+      CCfilter->SetSeed(CCseed);
+      CCfilter->SetInput(inputImage);
 
-      filter->SetInitialNeighborhoodRadius(radius);
-      filter->SetMultiplier(multiplier);
-      filter->SetNumberOfIterations(0);
+      CCfilter->SetInitialNeighborhoodRadius(radius);
+      CCfilter->SetMultiplier(multiplier);
+      CCfilter->SetNumberOfIterations(0);
 
-      filter->Update();
-      return filter->GetOutput();
+      CCfilter->Update();
+
+      return CCfilter->GetOutput();
     }
 
-    ImageType * ConnectedThresholdSegment(int lowerBound, int upperBound) {
-      CTFilterType::Pointer filter = CTFilterType::New();
-      filter->SetReplaceValue(intensity);
-      filter->SetSeed(seed);
-      filter->SetInput(inputImage);
+    ImageType * connectedThresholdSegment(int lowerBound, int upperBound) {
+      CTfilter->SetReplaceValue(intensity);
+      CTfilter->SetSeed(CTseed);
+      CTfilter->SetInput(inputImage);
 
-      filter->SetLower(lowerBound);
-      filter->SetUpper(upperBound);
+      CTfilter->SetLower(lowerBound);
+      CTfilter->SetUpper(upperBound);
 
-      filter->Update();
-      return filter->GetOutput();
+      CTfilter->Update();
+      return CTfilter->GetOutput();
     }
 };
 
@@ -97,10 +101,6 @@ int main(int argc, char const *argv[])
   reader->SetFileName(argv[1]);
   writer->SetFileName("output.dcm");
 
-  // intensity threshold
-  // int lower = inputToInt(argv[2]);
-  // int upper = inputToInt(argv[3]);
-
   // parse x, y and z coordinates args
   float x = inputToFloat(argv[4]);
   float y = inputToFloat(argv[5]);
@@ -108,8 +108,14 @@ int main(int argc, char const *argv[])
 
   // parse intensity replacement value
   int intensity = inputToInt(argv[7]);
-  int multiplier = inputToInt(argv[2]);
-  int radius = inputToInt(argv[3]);
+
+  // lower bound when Threshold, multiplier when Region Growing
+  int param2 = inputToFloat(argv[2]);
+
+  // upper bound when Threshold, radius when Region Growing
+  int param3 = inputToFloat(argv[3]);
+
+  char segmentationType = *argv[8];
 
   // instantiate a segmentator with the input image
   Segmentator * segmentator = new Segmentator(reader->GetOutput());
@@ -117,16 +123,42 @@ int main(int argc, char const *argv[])
   // configure segmentation parameters on segmentator
   segmentator->setSeedPoint(x, y, z);
   segmentator->setIntersity(intensity);
-  segmentator->setMultiplier(multiplier);
-  segmentator->setRadius(radius);
+  segmentator->setMultiplier(param2);
+  segmentator->setRadius(param3);
 
-  // run confidence connected (region growing) segmentation
-  writer->SetInput(segmentator->confidenceConnectedSegment());
+  ImageType *resultImage;
+
+  if(segmentationType == 'R') {
+    // run confidence connected (region growing) segmentation
+    resultImage = segmentator->confidenceConnectedSegment();
+  } else if (segmentationType == 'T') {
+    // run connected threshold (thresholding) segmentation
+    resultImage = segmentator->connectedThresholdSegment(param2, param3);
+  } else {
+    printf("Segmentation type must be either R(egion growin) or T(hresholding)\n");
+    exit(0);
+  }
+
+  ImageType::SpacingType spacing =  resultImage->GetSpacing();
+
+  printf("x Spacing %f\n", spacing[0]);
+  printf("y Spacing %f\n", spacing[1]);
+  printf("z Spacing %f\n", spacing[2]);
+
+  itk::ImageRegionIterator<ImageType> it(resultImage, resultImage->GetRequestedRegion());
+  it.GoToBegin();
+
+  int regionPixels = 0;
+  while( !it.IsAtEnd() ) {
+    if(it.Get()) { regionPixels++; }
+    ++it;
+  }
+
+  double volume = regionPixels * spacing[0] * spacing[1];
+  printf("Volume: %f\n", volume);
+
+  writer->SetInput(resultImage);
   writer->Update();
-
-  // run connected threshold segmentation
-  // writer->SetInput(segmentator->confidenceConnectedSegment(lowerBound, upperBound));
-  // writer->Update();
 
   return 0;
 }
